@@ -1,0 +1,186 @@
+---
+title: "Introduction to MAF"
+author: Erika Li, Jeanne Revilla, Mahija Mogalipuvvu, adapted from Nicole Black, Wade Boohar
+date: 07/17/22
+updated: 9/29/2025
+---
+
+***Deliverables***
+- upload this R Notebook to your GitHub and submit the link to your Repo on Brightspace
+- include ALL graphs or figures created in this assignment in a folder with your R notebook with descriptive file names.
+
+We encourage you to work with a partner. Therefore, it is okay if your answers are the same as your partner’s as long as everyone understands it and could explain it in their own words if asked. Each person must individually push their code to Github. *At the top of your R Notebook, write the name of you and your partner(s) as a comment.*
+
+***Complete the following coding activity and answer any following questions as comments in your R Notebook***
+
+In this assignment, you will need to use your skills learned in class to demonstrate your understanding of categorical variables and R data structures.
+
+*Pre-Assignment*
+Load all necessary packages, read in the clinical data.csv file you have in your analysis_data folder, and instantiate the MAF_object.
+```{r}
+getwd()
+if(!require("knitr", quietly = TRUE))
+install.packages("knitr")
+if(!require("BiocManager",quietly=TRUE))
+install.packages("BiocManager")
+BiocManager::install(version ="3.21")
+if(!require("TCGAbiolinks",quietly= TRUE))
+BiocManager::install("TCGAbiolinks")
+if(!require("maftools",quietly=TRUE))
+BiocManager::install("maftools")
+library(BiocManager)
+library(TCGAbiolinks)
+library(maftools)
+```
+
+```{r}
+
+knitr::opts_knit$set(root.dir = normalizePath("/home1/selinali/490_cluster/analysis_data")) 
+
+clin_query <- GDCquery(project = "TCGA-BRCA",
+  data.category = "Clinical",
+  data.type = "Clinical Supplement",
+  data.format = 'BCR Biotab')
+
+clinic <- read.csv("/home1/selinali/490_cluster/analysis_data/brca_clinical_data.csv", stringsAsFactors = FALSE)
+
+colnames(clinic)[ colnames(clinic) == "bcr_patient_barcode" ] <- "Tumor_Sample_Barcode"
+maf_query <- GDCquery(
+  project = "TCGA-BRCA",
+  data.category = "Simple Nucleotide Variation",
+  access = "open",
+  data.type = "Masked Somatic Mutation",
+  workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+#GDCdownload(maf_query, method = "api", files.per.chunk = 100)
+maf <- GDCprepare(maf_query)
+maf_object <- read.maf(maf = maf, clinicalData = clinic, isTCGA = TRUE)
+
+```
+
+
+
+
+It's useful to save your MAF_object, so that you don't have to go through the trouble of querying and preparing it everytime. The saveRDS function allows us to save an R object, allowing us to access it directly from our files. 
+```{r}
+saveRDS(maf_object, file = "/home1/selinali/490_cluster/analysis_data/maf_object.rds")
+# ex. saveRDS(MAF_object, file = "/home1/erika/490_cluster/analysis_data/maf_object.rds")
+
+```
+
+When you reopen a new R session and want to access your MAF_object, you can use the readRDS function to load the object back into a new variable.
+```{r}
+maf_object <- readRDS(file = "/home1/selinali/490_cluster/analysis_data/maf_object.rds")
+# ex. MAF_object <- readRDS(file = "/home1/erika/490_cluster/analysis_data/maf_object.rds")
+```
+
+
+*1*
+Choose a clinical variable (or any variable from clin_rad or clin_drug) to separate your populations into two different groups and rewrite the column or create a new column with that variable as a factor. ***Do not use age or vital_status as your clinical variable.*** Hint: if your variable is continuous, you will need to determine your own cutoffs for the different levels of the factor. If your variable is categorical and has more than two possible values, choose the two that are the most common.
+```{r}
+
+# clinic$gender_group <- ifelse(clinic$gender == "FEMALE", "Female",
+#                         ifelse(clinic$gender == "MALE", "Male", NA))
+# 
+# # factor
+# clinic$gender_group <- factor(clinic$gender_group, levels = c("Female", "Male"))
+# 
+# 
+# table(clinic$gender_group, useNA = "ifany")
+# 
+# maf_object@clinical.data$gender_group <- clinic$gender_group
+
+maf_object@clinical.data$gender <- ifelse(
+  maf_object@clinical.data$gender == "FEMALE", "FEMALE", "MALE"
+)
+
+```
+
+
+*2*
+Create a co-oncoplot with the top 10-20 (you choose) most mutated genes for the two groups. Pick one that has a large discrepancy in % mutated or type of mutations between the groups and research it. 
+Research it. What is the gene used for? Can you think of any reason for the discrepancy?
+```{r}
+female_mask <- maf_object@clinical.data$gender == "FEMALE"
+male_mask   <- maf_object@clinical.data$gender == "MALE"
+
+female_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[female_mask]
+male_barcodes   <- maf_object@clinical.data$Tumor_Sample_Barcode[male_mask]
+
+
+female_maf <- subsetMaf(maf = maf_object, tsb = female_barcodes)
+male_maf   <- subsetMaf(maf = maf_object, tsb = male_barcodes)
+
+
+coOncoplot(m1 = female_maf,
+           m2 = male_maf,
+           m1Name = "Female Patients",
+           m2Name = "Male Patients")
+
+```
+
+
+*3*
+Create a contingency table with your variable and chosen gene. Run a Fisher’s Exact Test between presence of mutations for that gene and your clinical variable. Create and save a mosaic plot. 
+Interpret the output of the Fisher’s Exact Test in terms of the odds ratio and p-value.
+```{r}
+gene <- "TP53"
+
+mut_mask <- maf_object@data$Hugo_Symbol == gene
+mut_samples <- unique(maf_object@data$Tumor_Sample_Barcode[mut_mask])
+
+clinic$has_mutation <- ifelse(clinic$Tumor_Sample_Barcode %in% mut_samples, "Mutated", "Not_Mutated")
+clinic$has_mutation <- factor(clinic$has_mutation, levels = c("Not_Mutated", "Mutated"))
+
+cont_table <- table(clinic$gender_group, clinic$has_mutation)
+cont_table
+
+fisher_result <- fisher.test(cont_table)
+fisher_result
+
+pdf("/home1/selinali/490_cluster/analysis_data/mosaic_gender_TP53.pdf", width = 6, height = 6)
+mosaicplot(cont_table,
+           main = paste("TP53 Mutation by Gender"),
+           xlab = "Gender",
+           ylab = "TP53 Mutation Status",
+           color = TRUE,
+           las = 1)
+dev.off()
+```
+
+
+*4*
+Subset your maf_object based on your chosen clinical variable and create a co-lollipop plot of your chosen gene divided between the two different clinical variable possibilities. Include descriptive names on your plot.
+Do you notice any difference in terms of mutations (e.g. sites, types, number) between the two populations?
+```{r}
+lollipopPlot2(m1 = female_maf,
+              m2 = male_maf,
+              m1_name = "Female",
+              m2_name = "Male",
+              gene = gene)
+```
+
+
+*5*
+Create your Overall_Survival_Status column and create a mafSurvival KM plot based on mutations in your chosen gene.
+Does there seem to be a difference? Hypothesize why or not based on the other analysis you did with the gene above.
+```{r}
+maf_object@clinical.data$Overall_Survival_Status <-
+  ifelse(maf_object@clinical.data$vital_status == "Alive", TRUE, FALSE)
+
+maf_object@clinical.data$survival_time <-
+  ifelse(maf_object@clinical.data$last_contact_days_to == "[Not Available]",
+         maf_object@clinical.data$death_days_to,
+         maf_object@clinical.data$last_contact_days_to)
+
+maf_object@clinical.data$survival_time <-
+  as.numeric(maf_object@clinical.data$survival_time)
+
+# KM survival plot 
+mafSurvival(maf = maf_object,
+            genes = gene,
+            time = "survival_time",
+            Status = "Overall_Survival_Status",
+            isTCGA = TRUE)
+```
