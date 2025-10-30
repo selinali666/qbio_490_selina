@@ -21,6 +21,7 @@ Use knitr function to set your working directory to your analysis_data folder in
  knitr::opts_knit$set(root.dir = normalizePath("/PATH/TO/analysis_data"))
 ```
 
+
 If DESeq2 is not already installed, install it now
 ```{r}
 if (!require("DESeq2", quietly = TRUE))
@@ -30,12 +31,14 @@ BiocManager::install("EnhancedVolcano")
 
 ```
 
+
 Load in all necessary packages
 ```{r}
 library(DESeq2)
 library(dplyr)
 library(readr)
 library(EnhancedVolcano)
+
 ```
 
 
@@ -47,6 +50,7 @@ Read in the rna_clinical, rna_genes, and rna_counts dataframes which you made in
 rna_clinical <- read.csv("brca_rna_clinical_data.csv", row.names = 1, check.names = FALSE)
 rna_genes    <- read.csv("brca_rna_gene_data.csv",         check.names = FALSE)
 rna_counts   <- read.csv("brca_rna_count_data.csv", row.names = 1, check.names = FALSE)
+
 
 ```
 
@@ -76,6 +80,7 @@ count_mat <- round(count_mat)
 
 # filter
 count_mat <- count_mat[rowSums(count_mat) >= 1000, ]
+
 ```
 
 
@@ -84,17 +89,6 @@ Perform the differential expression analysis, All you need to do is fill in the 
 ```{r}
 
 #,filtered out low-expressed genes (genes with counts <10 in most samples) and randomly selected up to 150 samples per group.
-
-keep_gene <- rowSums(count_mat >= 10) >= 20
-count_mat <- count_mat[keep_gene, , drop = FALSE]
-
-set.seed(1)
-table(rna_clinical$definition_bin)
-sel <- unlist(tapply(seq_len(nrow(rna_clinical)),
-                     rna_clinical$definition_bin,
-                     function(x) sample(x, min(150, length(x)))))
-rna_clinical <- rna_clinical[sel, , drop = FALSE]
-count_mat    <- count_mat[, rownames(rna_clinical), drop = FALSE]
 
 
 rna_clinical$age_scaled <- as.numeric(scale(rna_clinical$age_at_index))
