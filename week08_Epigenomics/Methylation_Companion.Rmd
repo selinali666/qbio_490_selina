@@ -1,0 +1,260 @@
+---
+title: "Intro to Epigenomics"
+author: Wade Boohar
+date: 11/03/24
+updated: 03/07/24
+---
+
+
+```{r setup}
+ knitr::opts_knit$set(root.dir = normalizePath("/home1/selinali/490_cluster/analysis_data"))
+```
+
+Package Download and Data-cleaning
+```{r}
+if (!require("sesameData", quietly = TRUE))
+BiocManager::install("sesameData")
+
+if (!require("sesame", quietly = TRUE))
+BiocManager::install("sesame")
+
+if (!require("limma", quietly = TRUE))
+BiocManager::install("limma")
+
+install.packages("data.table")
+
+```
+
+
+Load in all necessary packages
+```{r}
+library(TCGAbiolinks)
+library(sesame)
+library(sesameData)
+library(limma)
+library(data.table)
+```
+
+```{r}
+library(ggplot2)
+library(DESeq2)
+library(SummarizedExperiment)
+```
+
+
+```{r}
+methylation_clinical <- read.csv("/project/rohs_1070/analysis_data/brca_methylation_clinical.csv", row.names = 1)
+cpg_sites            <- read.csv("/project/rohs_1070/analysis_data/brca_cpg_sites.csv", row.names = 1)
+
+
+betas <- fread('/project/rohs_1070/analysis_data/brca_methylation_betas.csv', showProgress = TRUE)
+betas <- as.data.frame(betas)
+rownames(betas) <- betas[[1]]
+betas[[1]] <- NULL
+
+```
+
+(1) Naive Differential Methylation
+```{r}
+#masking out NAs
+na_mask <- !is.na(methylation_clinical$age_at_diagnosis)
+methylation_clinical <- methylation_clinical[na_mask,]
+betas_clean <- betas[,na_mask]
+
+median <- median(methylation_clinical$age_at_diagnosis)
+
+methylation_clinical$age_category <- ifelse(methylation_clinical$age_at_diagnosis >= median, "old", "young")
+
+#fitting linear models using a "target value"
+young_mask <- methylation_clinical$age_category == "young"
+
+methylation_clinical$ages <- !young_mask
+
+mval <- t(apply(betas_clean, 1, function(x) log2(x/(1-x)))) 
+#mvalue is another statistic for methylation, centered at 0 and ranges from -1 to 1
+
+design <- model.matrix(~ages, data = methylation_clinical)
+fit <- lmFit(mval, design)
+fit2 <- eBayes(fit)
+```
+
+```{r}
+#Extracting model into dataframe
+dat <- data.frame(foldchange = fit[["coefficients"]][,2], logPvalue =  -log10(p.adjust(fit2[["p.value"]][,2],method='BY')), geneName = cpg_sites$gene)
+dat$threshold <- as.factor(abs(dat$foldchange) < 1)
+
+#Visualization
+cols <- c("TRUE" = "grey", "FALSE" = "blue")
+ggplot(data=dat, aes(x=foldchange, y = logPvalue, color=threshold)) +
+  geom_point(alpha=.2, size=0.6) +
+  scale_colour_manual(values = cols) +
+  geom_vline(xintercept = 1, colour="#990000", linetype="dashed") + 
+  geom_vline(xintercept = - 1, colour="#990000", linetype="dashed") +
+  geom_hline(yintercept = 2, colour = "#990000", linetype="dashed") +
+  theme(legend.position="none") +
+  xlab("Fold Change") +
+  ylab("-log10 p value") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+
+(2) Direct comparison of methylation status to transcriptional activity
+```{r}
+# Query for BRCA RNA-seq data
+library(TCGAbiolinks)
+query_rna <- GDCquery(
+  project = "TCGA-BRCA",
+  data.category = "Transcriptome Profiling", 
+  data.type = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts"
+)
+
+# Download and prepare
+GDCdownload(query_rna)
+rna_se <- GDCprepare(query_rna)
+
+
+```
+#...INSERT DESeq2 Stuff here to generate 'results'...
+```{r}
+# load in rna_se clinical data, rna_clinical <- rna_se@colData
+
+# filter out genes will total expression across allpatients of <20
+
+# filter out NAs in metastatis column. run DESeq2 on metastatic vs non metastatic patients
+
+# (2) Direct comparison of methylation status to transcriptional activity
+
+
+# Use the rna_se object that's already loaded in your environment
+rna_clinical <- as.data.frame(rna_se@colData)
+rna_counts <- as.data.frame(assay(rna_se, "unstranded"))
+rna_genes <- as.data.frame(rowRanges(rna_se))
+
+# Filter for ONLY Metastatic vs Primary solid Tumor
+metastasis_mask <- rna_clinical$definition %in% c("Metastatic", "Primary solid Tumor")
+rna_clinical <- rna_clinical[metastasis_mask, ]
+rna_counts <- rna_counts[, rownames(rna_clinical)]
+
+# Create metastasis status column
+rna_clinical$metastasis_status <- ifelse(
+  rna_clinical$definition == "Metastatic", 
+  "Metastatic", 
+  "Primary_Solid_Tumor"
+)
+rna_clinical$metastasis_status <- factor(rna_clinical$metastasis_status, 
+                                        levels = c("Primary_Solid_Tumor", "Metastatic"))
+
+
+rna_clinical$age_at_index <- suppressWarnings(as.numeric(rna_clinical$age_at_index))
+age_na_mask <- !is.na(rna_clinical$age_at_index)
+rna_clinical <- rna_clinical[age_na_mask, ]
+rna_counts <- rna_counts[, rownames(rna_clinical)]
+
+print(paste("Number of samples after filtering NA age values:", nrow(rna_clinical)))
+
+# Prepare count matrix and filter low-count genes
+count_mat <- as.matrix(rna_counts)
+mode(count_mat) <- "numeric"
+count_mat[is.na(count_mat)] <- 0
+count_mat <- round(count_mat)
+
+# Filter
+count_mat <- count_mat[rowSums(count_mat) >= 20, ]
+
+print(paste("Number of genes after filtering:", nrow(count_mat)))
+```
+
+```{r}
+# DESeq2
+dds <- DESeqDataSetFromMatrix(
+  countData = count_mat,
+  colData = rna_clinical,
+  design = ~ age_at_index + metastasis_status
+)
+
+dds_obj <- DESeq(dds)
+
+results <- results(dds_obj, contrast = c("metastasis_status", "Metastatic", "Primary_Solid_Tumor"))
+results <- as.data.frame(results)
+
+# Apply thresholds
+sig_results <- results[!is.na(results$padj) & results$padj < 0.05 & abs(results$log2FoldChange) > 1, ]
+
+# Extract down-regulated genes
+down_regulated <- rownames(sig_results[sig_results$log2FoldChange < -1, ])
+
+print(paste("Number of significantly down-regulated genes:", length(down_regulated)))
+print("First few down-regulated genes:")
+print(head(down_regulated))
+
+```
+
+
+
+
+
+```{r}
+#you can also try looking at "upregulated" or "hypermethylated" !
+downregulated <- results[(results$log2FoldChange < 3), 'gene_name']
+hypomethylated <- dat[dat$foldchange < -1, 'geneName']
+interest_genes <- intersect(downregulated, hypomethylated)
+interest_genes
+```
+
+(Extra) Making Boxplots
+```{r}
+GENE<-"SCTR"
+
+gene_counts_mask <- rna_genes$gene_name == GENE
+gene_betas_mask <- cpg_sites$gene == GENE
+
+rna_clinical_tumor <- rna_clinical$definition == "Primary solid Tumor"
+methylation_clinical_tumor <- methylation_clinical$definition == "Primary solid Tumor"
+
+rna_clinical_normal <- rna_clinical$definition == "Solid Tissue Normal"
+methylation_clinical_normal <- methylation_clinical$definition == "Solid Tissue Normal"
+
+rna_tumor <- as.numeric(rna_counts[gene_counts_mask, rna_clinical_tumor])
+methylation_tumor <- (betas[gene_betas_mask, methylation_clinical_tumor])
+
+rna_normal <- as.numeric(rna_counts[gene_counts_mask, rna_clinical_normal])
+methylation_normal <- (betas[gene_betas_mask, methylation_clinical_normal])
+```
+
+```{r}
+boxplot(rna_normal, rna_tumor, xlab='Group', ylab='Counts', names=c('Normal', 'Tumor'))
+```
+
+
+
+```{r}
+#PArt1
+#The volcano plot reveals the methylation patterns between metastatic and non-metastatic BRCA patients. The plot shows that no CpG sites exhibit fold changes exceeding ±1, indicating the absence of strongly hypermethylated or hypomethylated sites at this significance threshold. The data points are clustered around zero fold change with low -log10 p-values, which suggests minimal methylation differences between metastatic and primary tumor samples. Definitive conclusions regarding biological significance cannot be drawn, as the lack of strongly differentially methylated sites may indicate that methylation changes in metastasis are subtle or that alternative statistical thresholds are required for detection.
+
+#PArt2
+# The analysis identified 377 significantly down-regulated genes in metastatic compared to primary tumor samples,but no genes meeting the hypomethylation threshold (fold change < -1). Consequently, no genes were found in the intersection of down-regulated and hypomethylated genes.
+
+#This suggests that at this significance threshold, transcriptional down-regulation in metastatic samples may not be directly associated with promoter hypomethylation.However, I cannot rule out more subtle epigenetic regulation or regulation through other mechanisms.
+
+#PART 3
+#The gene that I chose are ENSG00000006788.14, ENSG00000038427.16,ENSG00000029559.7 
+#Gene 1 – MYH13 (ENSG00000006788.14)
+#In the UCSC Genome Browser (hg38), MYH13 shows a distinct CpG island overlapping its promoter region near the TSS on chromosome 17.This island lies directly upstream of the first coding exon and adjacent to UniProt-annotated myosin domains, suggesting classical epigenetic regulation potential.
+
+#Gene2 ENSG00000038427.16 is VCAN
+#The VCAN gene on chromosome 5 contains a large CpG island encompassing the promoter and 5′ UTR region, characteristic of genes under methylation-dependent control.Given VCAN’s role in extracellular-matrix organization and cell migration, promoter methylation changes could influence metastatic potential.Our results suggest mild hypermethylation in metastatic samples, though fold-changes did not exceed ±1, indicating that the effect size is modest.
+
+#Gene3 ENSG00000029559.7 (FN1)
+#On chromosome 2, FN1 (Fibronectin 1) exhibits a prominent CpG island covering its promoter region and extending into the first exon.This configuration suggests strong epigenetic regulation potential, as FN1 encodes a key extracellular-matrix protein frequently implicated in cell adhesion and metastasis.In our dataset, FN1 showed no significant promoter hypermethylation between metastatic and non-metastatic samples. This could imply that FN1 overexpression in metastasis may occur through transcriptional or post-epigenetic mechanisms.
+#A study by Zhang et al. (2022) found FN1 hypermethylation correlated with better breast cancer prognosis, while our analysis showed no significant methylation changes. This difference could stem from varying patient populations or analytical methods between studies.
+#Zhang, X. X., Luo, J. H., & Wu, L. Q. (2022). FN1 overexpression is correlated with unfavorable prognosis and immune infiltrates in breast cancer. Frontiers in genetics, 13, 913659. https://doi.org/10.3389/fgene.2022.913659
+
+
+
+
+
+
+```
+
